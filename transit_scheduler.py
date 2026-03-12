@@ -10,10 +10,12 @@ st.markdown("**C**HEOPS **H**elper for **O**bservation **P**hase **S**cheduling 
 
 # ── Synced slider + number-input helper ──────────────────────────────────────
 def synced_slider(label, min_val, max_val, default, step, key, fmt="%.2f", help=None,
-                  log_scale=False):
+                  log_scale=False, container=None):
     """Slider with an adjacent number-input box kept in sync via session_state.
     When log_scale=True the slider operates in log10 space; the number input and
-    returned value are always in linear space."""
+    returned value are always in linear space.
+    Pass container= to render inside an expander or other non-sidebar container."""
+    ct = container if container is not None else st.sidebar
     s_key = f"_sl_{key}"
     n_key = f"_ni_{key}"
     if key not in st.session_state:
@@ -33,7 +35,7 @@ def synced_slider(label, min_val, max_val, default, step, key, fmt="%.2f", help=
             st.session_state[key] = float(np.clip(st.session_state[n_key], min_val, max_val))
             st.session_state[s_key] = _math.log10(st.session_state[key])
 
-        col1, col2 = st.sidebar.columns([3, 1])
+        col1, col2 = ct.columns([3, 1])
         with col1:
             st.slider(label, min_value=log_min, max_value=log_max,
                       value=_math.log10(float(st.session_state[key])),
@@ -53,7 +55,7 @@ def synced_slider(label, min_val, max_val, default, step, key, fmt="%.2f", help=
             st.session_state[key] = float(np.clip(st.session_state[n_key], min_val, max_val))
             st.session_state[s_key] = st.session_state[key]
 
-        col1, col2 = st.sidebar.columns([3, 1])
+        col1, col2 = ct.columns([3, 1])
         with col1:
             st.slider(label, min_value=float(min_val), max_value=float(max_val),
                       value=float(st.session_state[key]), step=float(step),
@@ -69,41 +71,58 @@ def synced_slider(label, min_val, max_val, default, step, key, fmt="%.2f", help=
 st.sidebar.header("Transit Parameters")
 
 P_days = synced_slider("Orbital Period P (days)", 0.5, 200.0, 1.5, 0.05, "P_days", fmt="%.3f",
-                       log_scale=True)
+                       log_scale=True,
+                       help="Known orbital period of the planet")
 P_hr   = P_days * 24.0
 
-trans_dur_hr = synced_slider("Transit Duration (hr)", 0.1, 24.0, 2.5, 0.1, "trans_dur", fmt="%.1f")
+trans_dur_hr = synced_slider("Transit Duration (hr)", 0.1, 24.0, 2.5, 0.1, "trans_dur", fmt="%.1f",
+                             help="Duration from first to last contact (T1 to T4)")
 
 pre_trans_baseline_dur_hr = synced_slider(
-    "Pre-transit Baseline (hr)", 0.1, 6.0, 1.65, 0.05, "pre_base", fmt="%.2f"
+    "Pre-transit Baseline (hr)", 0.1, 6.0, 1.65, 0.05, "pre_base", fmt="%.2f",
+    help="Out-of-transit baseline required before ingress"
 )
 post_trans_baseline_dur_hr = synced_slider(
     "Post-transit Baseline (hr)", 0.1, 6.0,
     st.session_state.get("post_base", st.session_state.get("pre_base", 1.65)),
-    0.05, "post_base", fmt="%.2f"
+    0.05, "post_base", fmt="%.2f",
+    help="Out-of-transit baseline required after egress"
 )
+# Clamp existing slack value if post-transit baseline was reduced below it
+if st.session_state.get("obs_slack", 1.0) > post_trans_baseline_dur_hr:
+    st.session_state["obs_slack"] = post_trans_baseline_dur_hr
 obs_slack_hr = synced_slider(
-    "Observation Slack Window (hr)", 0.1, 6.0, 1.0, 0.1, "obs_slack", fmt="%.1f",
-    help="Extra time allowed before the latest observation start"
+    "Observation Slack Window (hr)", 0.1, post_trans_baseline_dur_hr,
+    min(1.0, post_trans_baseline_dur_hr), 0.1, "obs_slack", fmt="%.1f",
+    help="Extra time allowed before the latest observation start (must be less than post-transit baseline to avoid losing entire post-transit baseline)"
 )
 
 # T0 uncertainty — unit toggle
-t0_unit = st.sidebar.radio("T0 Uncertainty units", ["hr", "min"], horizontal=True)
+t0_unit = st.sidebar.radio("T0 Uncertainty units", ["hr", "min"], index=1, horizontal=True)
 if t0_unit == "hr":
-    T0_unc_raw = synced_slider("T0 Uncertainty (hr)", 0.0, 5.0, 0.0, 0.05, "t0_hr", fmt="%.2f")
+    T0_unc_raw = synced_slider("T0 Uncertainty (hr)", 0.0, 5.0, 0.0, 0.05, "t0_hr", fmt="%.2f",
+                               help="1-σ uncertainty on the predicted mid-transit time")
     T0_unc_hr  = T0_unc_raw
 else:
-    T0_unc_raw = synced_slider("T0 Uncertainty (min)", 0.0, 300.0, 0.0, 1.0, "t0_min", fmt="%.0f")
+    T0_unc_raw = synced_slider("T0 Uncertainty (min)", 0.0, 300.0, 0.0, 1.0, "t0_min", fmt="%.0f",
+                               help="1-σ uncertainty on the predicted mid-transit time")
     T0_unc_hr  = T0_unc_raw / 60.0
 
-# Ingress/egress duration — unit toggle
-ing_unit = st.sidebar.radio("Ingress/Egress Duration units", ["hr", "min"], horizontal=True)
-if ing_unit == "hr":
-    ingress_raw    = synced_slider("Ingress/Egress Duration (hr)", 0.05, 3.0, 0.5, 0.05, "ing_hr", fmt="%.2f")
-    ingress_dur_hr = ingress_raw
-else:
-    ingress_raw    = synced_slider("Ingress/Egress Duration (min)", 1.0, 180.0, 30.0, 1.0, "ing_min", fmt="%.0f")
-    ingress_dur_hr = ingress_raw / 60.0
+# Ingress/egress duration — hidden behind expander
+_ing_exp = st.sidebar.expander("Add phase ranges (ingress/egress)")
+with _ing_exp:
+    show_phase_ranges = st.checkbox("Show T2/T3 phase ranges", value=False)
+    ing_unit = st.radio("Ingress/Egress Duration units", ["hr", "min"], index=1, horizontal=True)
+    if ing_unit == "hr":
+        ingress_raw    = synced_slider("Ingress/Egress Duration (hr)", 0.05, 3.0, 0.5, 0.05, "ing_hr", fmt="%.2f",
+                                       help="Duration of ingress (T1→T2) or egress (T3→T4); assumed equal",
+                                       container=_ing_exp)
+        ingress_dur_hr = ingress_raw
+    else:
+        ingress_raw    = synced_slider("Ingress/Egress Duration (min)", 1.0, 180.0, 30.0, 1.0, "ing_min", fmt="%.0f",
+                                       help="Duration of ingress (T1→T2) or egress (T3→T4); assumed equal",
+                                       container=_ing_exp)
+        ingress_dur_hr = ingress_raw / 60.0
 
 # Fixed transit depth
 trans_depth_ppm = 5000
@@ -139,12 +158,12 @@ egress_latest    = transit_center + half_dur_phase + t0_unc_phase   # T4 latest
 obs_dur_hr = pre_trans_baseline_dur_hr + 2 * T0_unc_hr + trans_dur_hr + post_trans_baseline_dur_hr
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Earliest Phase Start",        f"{earliest_phase_start:.5f}")
-c2.metric("Latest Phase Start",          f"{latest_phase_start:.5f}")
-c3.metric("Start Window Width",          f"{slack_phase:.5f}  ({obs_slack_hr:.1f} hr)")
+c1.metric("Earliest Start Phase",        f"{earliest_phase_start:.5f}")
+c2.metric("Latest Start Phase",          f"{latest_phase_start:.5f}")
+c3.metric("Slack duration",              f"{obs_slack_hr:.1f} hr")
 CHEOPS_ORBIT_MIN = 98.77
 obs_dur_orbits = obs_dur_hr * 60.0 / CHEOPS_ORBIT_MIN
-c4.metric("Total Obs. Duration (ex. slack)", f"{obs_dur_hr:.2f} hr  ({obs_dur_orbits:.2f} orbits)")
+c4.metric("Visit Duration (ex. slack)", f"{obs_dur_orbits:.2f} orbits ({obs_dur_hr:.2f} hr)")
 
 # ── Transit model (trapezoid) ─────────────────────────────────────────────────
 def trapezoid_transit(phase_arr, center, half_dur, ingress_frac, depth):
@@ -168,6 +187,7 @@ def trapezoid_transit(phase_arr, center, half_dur, ingress_frac, depth):
 depth   = trans_depth_ppm / 1e6
 x_min   = earliest_phase_start
 post_baseline_end = egress_latest + post_baseline_phase
+post_slack_start  = post_baseline_end - slack_phase   # slack carved from end of post-baseline
 x_max   = post_baseline_end
 phase   = np.linspace(x_min, x_max, 3000)
 
@@ -190,55 +210,76 @@ C_TICK     = "#cccccc"
 # y limits: tight — banner is drawn in axes-fraction space, not data space
 y_bot = 1 - 1.6 * depth
 y_top = 1.008
-# Banner occupies the top 8 % of the axes (axes-fraction coords)
-BAN_LO_F, BAN_HI_F = 0.92, 1.00
+# Banners: top 8 % and bottom 8 % of the axes (axes-fraction coords)
+BAN_LO_F,  BAN_HI_F  = 0.92, 1.00   # top
+BBOT_LO_F, BBOT_HI_F = 0.00, 0.08   # bottom (slack only)
 
 # ── Region fills (full height) ───────────────────────────────────────────────
 ax.axvspan(earliest_phase_start, latest_phase_start, alpha=0.22, color=C_WIN,   zorder=1)
-ax.axvline(earliest_phase_start, color=C_WIN, ls="--", lw=1.5, alpha=0.9)
-ax.axvline(latest_phase_start,   color=C_WIN, ls="--", lw=1.5, alpha=0.9)
+ax.axvline(earliest_phase_start, color="red", ls="--", lw=1.5, alpha=0.9)
+ax.axvline(latest_phase_start,   color="white", ls="--", lw=1.5, alpha=0.9)
 ax.axvspan(latest_phase_start,   ingress_earliest,    alpha=0.18, color=C_BASE, zorder=1)
 ax.axvspan(ingress_earliest,     ingress_latest,      alpha=0.35, color=C_T0,   zorder=2)
 ax.axvspan(egress_earliest,      egress_latest,       alpha=0.35, color=C_T0,   zorder=2)
-ax.axvspan(egress_latest,        post_baseline_end,   alpha=0.18, color=C_BASE, zorder=1)
+ax.axvspan(egress_latest,        post_slack_start,    alpha=0.18, color=C_BASE, zorder=1)
+ax.axvspan(post_slack_start,     post_baseline_end,   alpha=0.22, color=C_WIN,  zorder=1)
+ax.axvline(post_slack_start,     color=C_WIN, ls="--", lw=1.5, alpha=0.9)
 ax.fill_between(phase, flux_early, flux_late, alpha=0.28, color=C_T0, zorder=3)
 
 # ── Mid-transit vertical line ─────────────────────────────────────────────────
 ax.axvline(transit_center, color="#ffffff", ls=":", lw=1.2, alpha=0.5, zorder=4)
 
-# ── Light curve ───────────────────────────────────────────────────────────────
-ax.plot(phase, flux_nominal, color="white", lw=2.5, zorder=5)
+# ── Light curve (dashed in slack windows, solid in visit window) ───────────────
+visit_mask      = (phase >= latest_phase_start) & (phase <= post_slack_start)
+post_slack_mask = phase >= post_slack_start
+
+for mask in [visit_mask, post_slack_mask]:
+    seg = phase[mask]
+    if len(seg) > 1:
+        ax.plot(seg, flux_nominal[mask], color="white", lw=2.5, ls="-", zorder=5)
+
+# ── Earliest-start transit curve (red, slightly offset down) ──────────────────
+flux_earliest = trapezoid_transit(phase, transit_center, half_dur_phase, ingress_frac, depth)
+OFFSET = 0.3 * depth   # small downward offset so the two curves don't overlap perfectly
+early_mask = (phase >= earliest_phase_start) & (phase <= post_slack_start)
+ax.plot(phase[early_mask], flux_earliest[early_mask] - OFFSET,
+        color="red", lw=1.5, ls="-", alpha=0.8, zorder=5)
 
 # ── Duration banner at top (axes-fraction y via blended transform) ─────────────
 from matplotlib.transforms import blended_transform_factory
 _btrans = blended_transform_factory(ax.transData, ax.transAxes)
 
-def banner_segment(x0, x1, color, label):
-    """Draw a thin coloured rectangle at the very top of the axes."""
+def banner_segment(x0, x1, color, label, bottom=False):
+    """Draw a thin coloured rectangle at the top (or bottom) of the axes."""
     if x1 <= x0:
         return
+    lo_f = BBOT_LO_F if bottom else BAN_LO_F
+    hi_f = BBOT_HI_F if bottom else BAN_HI_F
     rect = mpatches.Rectangle(
-        (x0, BAN_LO_F), x1 - x0, BAN_HI_F - BAN_LO_F,
+        (x0, lo_f), x1 - x0, hi_f - lo_f,
         transform=_btrans, color=color, alpha=0.78, zorder=6, clip_on=True
     )
     ax.add_patch(rect)
     for xv in (x0, x1):
-        ax.plot([xv, xv], [BAN_LO_F, BAN_HI_F], color="#0e1117", lw=0.8,
+        ax.plot([xv, xv], [lo_f, hi_f], color="#0e1117", lw=0.8,
                 transform=_btrans, zorder=7, clip_on=True)
     cx = (x0 + x1) / 2
     hrs = (x1 - x0) * P_hr
     min_width = (x_max - x_min) * 0.045
     if (x1 - x0) > min_width:
-        ax.text(cx, (BAN_LO_F + BAN_HI_F) / 2, f"{label}  {hrs:.2f} hr",
+        ax.text(cx, (lo_f + hi_f) / 2, f"{label}  {hrs:.2f} hr",
                 transform=_btrans, ha="center", va="center",
                 fontsize=6.5, color="white", fontweight="bold", zorder=8)
 
-banner_segment(earliest_phase_start, latest_phase_start, C_WIN,     "Slack\n")
+# Top banners: visit window segments
 banner_segment(latest_phase_start,   ingress_earliest,   C_BASE,    "Pre-transit\nbaseline\n")
 banner_segment(ingress_earliest,     ingress_latest,     C_T0,      "T0 unc\n")
 banner_segment(ingress_latest,       egress_earliest,    C_TRANSIT, "Transit\n")
 banner_segment(egress_earliest,      egress_latest,      C_T0,      "T0 unc\n")
 banner_segment(egress_latest,        post_baseline_end,  C_BASE,    "Post-transit\nbaseline\n")
+# Bottom banners: slack windows
+banner_segment(earliest_phase_start, latest_phase_start, C_WIN,     "Slack", bottom=True)
+banner_segment(post_slack_start,     post_baseline_end,  C_WIN,     "Slack effect", bottom=True)
 
 # ── Contact point annotations ─────────────────────────────────────────────────
 # T1/T4 labelled at bottom; T2/T3 labelled slightly higher to avoid overlap
@@ -246,7 +287,7 @@ banner_segment(egress_latest,        post_baseline_end,  C_BASE,    "Post-transi
 def _contact_label(ph, label, y_frac, color):
     ax.axvline(ph, color=color, ls=":", lw=1.0, alpha=0.7, zorder=4)
     y_data = y_bot + (y_top - y_bot) * y_frac
-    ax.text(ph, y_data, f"{label}\n{ph:.5f}", ha="center", va="bottom",
+    ax.text(ph, y_data, f"{label}: {ph:.5f}", ha="center", va="bottom",
             fontsize=9, color=color, zorder=8, rotation=90,
             bbox=dict(boxstyle="round,pad=0.15", fc="#0e1117", ec="none", alpha=0.7))
 
@@ -254,23 +295,25 @@ C_T2T3 = "#ff55cc"   # distinct colour for T2/T3
 
 if T0_unc_hr == 0:
     _contact_label(ingress_earliest, "T1",  0.01, C_T0)
-    _contact_label(t2_earliest,      "T2",  0.16, C_T2T3)
-    _contact_label(t3_earliest,      "T3",  0.16, C_T2T3)
+    if show_phase_ranges:
+        _contact_label(t2_earliest,  "T2",  0.16, C_T2T3)
+        _contact_label(t3_earliest,  "T3",  0.16, C_T2T3)
     _contact_label(egress_latest,    "T4",  0.01, C_T0)
 else:
     _contact_label(ingress_earliest, "T1-early", 0.01, C_T0)
     _contact_label(ingress_latest,   "T1-late",  0.01, C_T0)
-    _contact_label(t2_earliest,      "T2-early", 0.18, C_T2T3)
-    _contact_label(t2_latest,        "T2-late",  0.18, C_T2T3)
-    _contact_label(t3_earliest,      "T3-early", 0.18, C_T2T3)
-    _contact_label(t3_latest,        "T3-late",  0.18, C_T2T3)
+    if show_phase_ranges:
+        _contact_label(t2_earliest,  "T2-early", 0.18, C_T2T3)
+        _contact_label(t2_latest,    "T2-late",  0.18, C_T2T3)
+        _contact_label(t3_earliest,  "T3-early", 0.18, C_T2T3)
+        _contact_label(t3_latest,    "T3-late",  0.18, C_T2T3)
     _contact_label(egress_earliest,  "T4-early", 0.01, C_T0)
     _contact_label(egress_latest,    "T4-late",  0.01, C_T0)
 
 # ── Obs-start annotations ─────────────────────────────────────────────────────
-for ph, lbl in [(earliest_phase_start, "Earliest\nstart"), (latest_phase_start, "Latest\nstart")]:
+for ph, lbl, col in [(earliest_phase_start, "Earliest\nstart", "red"), (latest_phase_start, "Latest\nstart", "white")]:
     ax.text(ph, BAN_LO_F - 0.01, f"{lbl}\n{ph:.5f}", ha="center", va="top",
-            transform=_btrans, fontsize=10, color=C_WIN, zorder=8,
+            transform=_btrans, fontsize=10, color=col, zorder=8,
             bbox=dict(boxstyle="round,pad=0.15", fc="#0e1117", ec="none", alpha=0.7))
 
 # ── Axes style ────────────────────────────────────────────────────────────────
@@ -318,6 +361,35 @@ for sp in ax.spines.values():
 
 st.pyplot(fig)
 
+st.caption(
+    "**White curve** — transit as observed when the visit starts at the **latest start phase** "
+    f"(phase {latest_phase_start:.5f}). The full pre-transit and post-transit baselines are captured. "
+    "  \n"
+    "**Red curve** — transit as observed when the visit starts at the **earliest start phase** "
+    f"(phase {earliest_phase_start:.5f}, i.e. {obs_slack_hr:.1f} hr earlier). "
+    "As the visit is now shifted earlier; the post-transit baseline is reduced by the duration of the slack. "
+    "The small vertical offset between both transits is for visual clarity only."
+)
+
+# ── Parameter summary table ───────────────────────────────────────────────────
+st.divider()
+st.subheader("PHT2 input values")
+_params = ["Transit Period", "Visit Duration (excl. slack)", "Earliest Start Phase", "Latest Start Phase"]
+_values = [
+    f"{P_days:.2f} days",
+    f"{obs_dur_orbits:.2f} CHEOPS orbits",
+    f"{earliest_phase_start:.6f}",
+    f"{latest_phase_start:.6f}",
+]
+if show_phase_ranges:
+    _params += ["Phase Ranges: Start 1, End 1", "Phase Ranges: Start 2, End 2"]
+    _values += [
+        f"({ingress_earliest:.6f}, {t2_earliest:.6f})" if T0_unc_hr == 0 else f"({ingress_earliest:.6f}, {t2_latest:.6f})",
+        f"({t3_earliest:.6f}, {egress_latest:.6f})",
+    ]
+st.table({"Parameter": _params, "Value": _values})
+
+
 # ── Formula display ───────────────────────────────────────────────────────────
 st.divider()
 st.subheader("Formulae")
@@ -345,34 +417,3 @@ with fc2:
         f"= {earliest_phase_start:.6f}"
     )
 
-# ── Parameter summary table ───────────────────────────────────────────────────
-st.divider()
-st.subheader("Parameter Summary")
-st.table({
-    "Parameter": [
-        "Orbital Period P",
-        "Transit Duration",
-        "Ingress/Egress Duration",
-        "Pre-transit Baseline",
-        "Post-transit Baseline",
-        "T0 Uncertainty",
-        "Transit Depth",
-        "Total Obs. Duration (excl. slack)",
-        "Latest Phase Start",
-        "Earliest Phase Start",
-        "Start Window Width",
-    ],
-    "Value": [
-        f"{P_days:.2f} days  ({P_hr:.2f} hr)",
-        f"{trans_dur_hr:.2f} hr  ({half_dur_phase*2:.5f} in phase)",
-        f"{ing_label}  ({ingress_dur_hr:.3f} hr)",
-        f"{pre_trans_baseline_dur_hr:.2f} hr  ({baseline_phase:.5f} in phase)",
-        f"{post_trans_baseline_dur_hr:.2f} hr  ({post_baseline_phase:.5f} in phase)",
-        f"±{t0_label}  (±{T0_unc_hr:.3f} hr  /  ±{t0_unc_phase:.5f} in phase)",
-        f"{trans_depth_ppm} ppm  (fixed)",
-        f"{obs_dur_hr:.2f} hr  ({obs_dur_orbits:.2f} CHEOPS orbits)",
-        f"{latest_phase_start:.6f}",
-        f"{earliest_phase_start:.6f}",
-        f"{slack_phase:.6f}  ({obs_slack_hr:.2f} hr)",
-    ],
-})
