@@ -92,7 +92,7 @@ post_trans_baseline_dur_hr = synced_slider(
 if st.session_state.get("obs_slack", 1.0) > post_trans_baseline_dur_hr:
     st.session_state["obs_slack"] = post_trans_baseline_dur_hr
 obs_slack_hr = synced_slider(
-    "Observation Slack Window (hr)", 0.1, post_trans_baseline_dur_hr,
+    "Observation Slack Window (hr)", 0.0, post_trans_baseline_dur_hr,
     min(1.0, post_trans_baseline_dur_hr), 0.1, "obs_slack", fmt="%.1f",
     help="Extra time allowed before the latest observation start (must be less than post-transit baseline to avoid losing entire post-transit baseline)"
 )
@@ -150,6 +150,38 @@ with st.sidebar.expander("Highlight custom phase ranges"):
 
 custom_ranges = _parse_ranges(_ranges_raw)
 
+# ── JD ↔ Date converter ───────────────────────────────────────────────────────
+import datetime as _dt
+
+def _jd_to_datetime(jd):
+    return _dt.datetime(2000, 1, 1, 12, 0, 0) + _dt.timedelta(days=jd - 2451545.0)
+
+def _datetime_to_jd(dt):
+    return 2451545.0 + (dt - _dt.datetime(2000, 1, 1, 12, 0, 0)).total_seconds() / 86400.0
+
+_now = _dt.datetime.now(_dt.timezone.utc)
+_now_jd = _datetime_to_jd(_now.replace(tzinfo=None))
+
+with st.sidebar.expander("JD ↔ Date converter"):
+    st.markdown("**JD → Date**")
+    jd_input = st.number_input("Julian Date", value=round(_now_jd, 4), step=1.0, format="%.4f",
+                               help="Julian Date (JD) to convert to UTC calendar date",
+                               key="jd_conv_input")
+    conv_dt = _jd_to_datetime(jd_input)
+    st.caption("UTC:")
+    st.code(conv_dt.strftime('%Y-%m-%d %H:%M:%S'), language=None)
+
+    st.markdown("**Date → JD**")
+    _dc, _tc = st.columns([3, 2])
+    date_input = _dc.date_input("Date (UTC)", value=_now.date(), key="date_conv_input",
+                                help="Calendar date (UTC)")
+    time_input = _tc.time_input("Time (UTC)", value=_now.time().replace(second=0, microsecond=0),
+                                key="time_conv_input")
+    conv_dt2 = _dt.datetime.combine(date_input, time_input)
+    conv_jd  = _datetime_to_jd(conv_dt2)
+    st.caption("JD:")
+    st.code(f"{conv_jd:.4f}", language=None)
+
 # Fixed transit depth
 trans_depth_ppm = 5000
 
@@ -183,13 +215,12 @@ egress_latest    = transit_center + half_dur_phase + t0_unc_phase   # T4 latest
 # ── Metric cards ──────────────────────────────────────────────────────────────
 obs_dur_hr = pre_trans_baseline_dur_hr + 2 * T0_unc_hr + trans_dur_hr + post_trans_baseline_dur_hr
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("Earliest Start Phase",        f"{earliest_phase_start:.5f}")
 c2.metric("Latest Start Phase",          f"{latest_phase_start:.5f}")
-c3.metric("Slack duration",              f"{obs_slack_hr:.1f} hr")
 CHEOPS_ORBIT_MIN = 98.77
 obs_dur_orbits = obs_dur_hr * 60.0 / CHEOPS_ORBIT_MIN
-c4.metric("Visit Duration (ex. slack)", f"{obs_dur_orbits:.2f} orbits ({obs_dur_hr:.2f} hr)")
+c3.metric("Visit Duration (ex. slack)", f"{obs_dur_orbits:.2f} orbits ({obs_dur_hr:.2f} hr)")
 
 # ── Transit model (trapezoid) ─────────────────────────────────────────────────
 def trapezoid_transit(phase_arr, center, half_dur, ingress_frac, depth):
@@ -242,15 +273,15 @@ BBOT_LO_F, BBOT_HI_F = 0.00, 0.08   # bottom (slack only)
 
 # ── Region fills (full height) ───────────────────────────────────────────────
 ax.axvspan(earliest_phase_start, latest_phase_start, alpha=0.22, color=C_WIN,   zorder=1)
-ax.axvline(earliest_phase_start, color="red", ls="--", lw=1.5, alpha=0.9)
+ax.axvline(earliest_phase_start, color="red", ls="--", lw=1.5, alpha=0.9,zorder=9)
 ax.axvline(latest_phase_start,   color="white", ls="--", lw=1.5, alpha=0.9)
 ax.axvspan(latest_phase_start,   ingress_earliest,    alpha=0.18, color=C_BASE, zorder=1)
 ax.axvspan(ingress_earliest,     ingress_latest,      alpha=0.35, color=C_T0,   zorder=2)
 ax.axvspan(egress_earliest,      egress_latest,       alpha=0.35, color=C_T0,   zorder=2)
 ax.axvspan(egress_latest,        post_slack_start,    alpha=0.18, color=C_BASE, zorder=1)
 ax.axvspan(post_slack_start,     post_baseline_end,   alpha=0.22, color=C_WIN,  zorder=1)
-ax.axvline(post_slack_start,     color=C_WIN, ls="--", lw=1.5, alpha=0.9)
-ax.fill_between(phase, flux_early, flux_late, alpha=0.28, color=C_T0, zorder=3)
+ax.axvline(post_slack_start,     color="red",   ls="--", lw=1.5, alpha=0.9)   # end of red curve
+ax.axvline(post_baseline_end,    color="white", ls="--", lw=1.5, alpha=0.9,zorder=9)   # end of white curve
 
 # ── Custom phase range highlights ─────────────────────────────────────────────
 for r_start, r_end in custom_ranges:
@@ -342,8 +373,14 @@ else:
     _contact_label(egress_earliest,  "T4-early", 0.01, C_T0)
     _contact_label(egress_latest,    "T4-late",  0.01, C_T0)
 
-# ── Obs-start annotations ─────────────────────────────────────────────────────
-for ph, lbl, col in [(earliest_phase_start, "Earliest\nstart", "red"), (latest_phase_start, "Latest\nstart", "white")]:
+# ── Obs-start / obs-end annotations ──────────────────────────────────────────
+_obs_labels = [
+    (earliest_phase_start, "Earliest\nstart", "red"),
+    (latest_phase_start,   "Latest\nstart",   "white"),
+    (post_slack_start,     "Earliest\nend",   "red"),
+    (post_baseline_end,    "Latest\nend",     "white"),
+]
+for ph, lbl, col in _obs_labels:
     ax.text(ph, BAN_LO_F - 0.01, f"{lbl}\n{ph:.5f}", ha="center", va="top",
             transform=_btrans, fontsize=10, color=col, zorder=8,
             bbox=dict(boxstyle="round,pad=0.15", fc="#0e1117", ec="none", alpha=0.7))
@@ -406,10 +443,10 @@ st.caption(
 # ── Parameter summary table ───────────────────────────────────────────────────
 st.divider()
 st.subheader("PHT2 input values")
-_params = ["Transit Period", "Visit Duration (excl. slack)", "Earliest Start Phase", "Latest Start Phase"]
+_params = ["Transit Period [days]", "Visit Duration [CHEOPS orbits]", "Earliest Start Phase", "Latest Start Phase"]
 _values = [
-    f"{P_days:.2f} days",
-    f"{obs_dur_orbits:.2f} CHEOPS orbits",
+    f"{P_days:.2f}",
+    f"{obs_dur_orbits:.2f}",
     f"{earliest_phase_start:.6f}",
     f"{latest_phase_start:.6f}",
 ]
