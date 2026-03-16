@@ -25,25 +25,29 @@ def synced_slider(label, min_val, max_val, default, step, key, fmt="%.2f", help=
 
     if log_scale:
         import math as _math
-        log_min = _math.log10(min_val)
-        log_max = _math.log10(max_val)
-        log_step = (log_max - log_min) / 400  # ~400 steps across the range
+        _log_opts = [round(float(v), 4) for v in np.logspace(_math.log10(min_val), _math.log10(max_val), 400)]
+        _seen = set(); _log_opts = [x for x in _log_opts if not (x in _seen or _seen.add(x))]
+
+        def _snap(val):
+            return min(_log_opts, key=lambda x: abs(x - float(val)))
+
         if s_key not in st.session_state:
-            st.session_state[s_key] = _math.log10(float(default))
+            st.session_state[s_key] = _snap(default)
+        elif st.session_state[s_key] not in set(_log_opts):
+            st.session_state[s_key] = _snap(st.session_state[s_key])
 
         def _on_slider():
-            st.session_state[key] = round(10 ** st.session_state[s_key], 6)
+            st.session_state[key] = float(st.session_state[s_key])
             st.session_state[n_key] = st.session_state[key]
 
         def _on_input():
             st.session_state[key] = float(np.clip(st.session_state[n_key], min_val, max_val))
-            st.session_state[s_key] = _math.log10(st.session_state[key])
+            st.session_state[s_key] = _snap(st.session_state[key])
 
         col1, col2 = ct.columns([3, 1])
         with col1:
-            st.slider(label, min_value=log_min, max_value=log_max,
-                      step=log_step, key=s_key, on_change=_on_slider,
-                      format="", help=help)
+            st.select_slider(label, options=_log_opts,
+                             key=s_key, on_change=_on_slider, help=help)
         with col2:
             st.number_input("val", min_value=float(min_val), max_value=float(max_val),
                             step=float(step), key=n_key, on_change=_on_input,
@@ -74,8 +78,7 @@ def synced_slider(label, min_val, max_val, default, step, key, fmt="%.2f", help=
 st.sidebar.header("Transit Parameters")
 
 P_days = synced_slider("Orbital Period P (days)", 0.5, 200.0, 1.5, 0.05, "P_days", fmt="%.3f",
-                       log_scale=True,
-                       help="Known orbital period of the planet")
+                       help="Known orbital period of the planet", log_scale=True)
 P_hr   = P_days * 24.0
 
 trans_dur_hr = synced_slider("Transit Duration (hr)", 0.1, 24.0, 2.5, 0.1, "trans_dur", fmt="%.1f",
