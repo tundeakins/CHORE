@@ -172,6 +172,64 @@ with st.sidebar.expander("Highlight custom phase ranges"):
 
 custom_ranges = _parse_ranges(_ranges_raw)
 
+# ── Target lookup ────────────────────────────────────────────────────────────
+def _gaia_dr3_lookup(query: str):
+    """Return (gaia_dr3_id, ra, dec, msg) given a target name or 'ra dec' coordinates."""
+    from astroquery.simbad import Simbad
+    from astroquery.vizier import Vizier
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    # Resolve to sky coordinates via SIMBAD (name) or direct parsing
+    try:
+        parts = query.strip().split()
+        if len(parts) == 2:
+            try:
+                ra_deg  = float(parts[0])
+                dec_deg = float(parts[1])
+                coord   = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg)
+            except ValueError:
+                coord = None
+        else:
+            coord = None
+
+        if coord is None:
+            try:
+                coord = SkyCoord.from_name(query)
+            except Exception:
+                return None, None, None, f"SIMBAD could not resolve '{query}'"
+    except Exception as e:
+        return None, None, None, f"Coordinate lookup failed: {e}"
+
+    # Cross-match Gaia DR3 within 3 arcsec
+    try:
+        viz = Vizier(columns=["Source", "RA_ICRS", "DE_ICRS", "Gmag"])
+        res = viz.query_region(coord, radius=3 * u.arcsec, catalog="I/355/gaiadr3")
+        if not res or len(res[0]) == 0:
+            return None, coord.ra.deg, coord.dec.deg, "No Gaia DR3 match within 3 arcsec"
+        row   = res[0][0]
+        gaia_id = f"Gaia DR3 {row['Source']}"
+        return gaia_id, float(row["RA_ICRS"]), float(row["DE_ICRS"]), None
+    except Exception as e:
+        return None, coord.ra.deg, coord.dec.deg, f"Gaia DR3 query failed: {e}"
+
+
+with st.sidebar.expander("Target Lookup (Gaia DR3)"):
+    _tgt_query = st.text_input("Target name or RA Dec (deg)",
+                               placeholder="e.g. WASP-121 or 107.6 −5.0",
+                               key="_tgt_query_input")
+    if st.button("Look up", key="_tgt_lookup_btn") and _tgt_query.strip():
+        with st.spinner("Querying…"):
+            _gid, _ra, _dec, _err = _gaia_dr3_lookup(_tgt_query.strip())
+        if _err and _gid is None:
+            st.error(_err)
+        else:
+            if _gid:
+                st.success(_gid)
+                st.caption(f"RA = {_ra:.6f}°   Dec = {_dec:.6f}°")
+            if _err:
+                st.warning(_err)
+
 # ── JD ↔ Date converter ───────────────────────────────────────────────────────
 import datetime as _dt
 
@@ -203,6 +261,9 @@ with st.sidebar.expander("JD ↔ Date converter"):
     conv_jd  = _datetime_to_jd(conv_dt2)
     st.caption("JD:")
     st.code(f"{conv_jd:.4f}", language=None)
+
+# st.sidebar.markdown("---")
+# st.sidebar.caption("Developed by Tunde Akinsanmi")
 
 # Fixed transit depth
 trans_depth_ppm = 5000
@@ -481,6 +542,17 @@ if show_phase_ranges:
     ]
 st.table({"Parameter": _params, "Value": _values})
 
+import io as _io, csv as _csv
+_csv_buf = _io.StringIO()
+_csv_writer = _csv.writer(_csv_buf)
+_csv_writer.writerow(["Parameter", "Value"])
+_csv_writer.writerows(zip(_params, _values))
+st.download_button(
+    label="Export as CSV",
+    data=_csv_buf.getvalue(),
+    file_name="pht2_parameters.csv",
+    mime="text/csv",
+)
 
 # ── Formula display ───────────────────────────────────────────────────────────
 st.divider()
